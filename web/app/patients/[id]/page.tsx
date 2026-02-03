@@ -118,7 +118,7 @@ export default async function PatientDetailPage({ params }: PatientDetailPagePro
                 </TabsContent>
 
                 <TabsContent value="budgets">
-                    <BudgetList patientId={patient.id} />
+                    <BudgetList patient={patient} />
                 </TabsContent>
 
                 <TabsContent value="certificates">

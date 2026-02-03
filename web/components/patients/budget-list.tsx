@@ -1,172 +1,187 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { createTenantClient } from "@/lib/supabase/tenant-client"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
+import { FileText, Plus, Download, Loader2, Calendar } from "lucide-react"
 import { format } from "date-fns"
 import { ptBR } from "date-fns/locale"
-import { Plus, DollarSign, FileCheck, XCircle, Clock } from "lucide-react"
+import { useRouter } from "next/navigation"
+import { BudgetForm } from "./budget-form"
+import { downloadBudgetPDF } from "./budget-pdf"
 
-interface Budget {
+interface Patient {
     id: string
-    status: 'draft' | 'presented' | 'approved' | 'rejected'
-    total_value: number
-    created_at: string
+    full_name: string
+    contact_email?: string
+    contact_phone?: string
+    document_id?: string
 }
 
 interface BudgetListProps {
-    patientId: string
+    patient: Patient
 }
 
-export function BudgetList({ patientId }: BudgetListProps) {
+interface Budget {
+    id: string
+    created_at: string
+    total_value: number
+    status: string
+    items: any[]
+    valid_until: string
+    conditions?: string
+}
+
+export function BudgetList({ patient }: BudgetListProps) {
+    const router = useRouter()
     const [budgets, setBudgets] = useState<Budget[]>([])
     const [isLoading, setIsLoading] = useState(true)
-    const [isOpen, setIsOpen] = useState(false)
-    const [isSaving, setIsSaving] = useState(false)
-
-    // Form
-    const [value, setValue] = useState("")
-    const [status, setStatus] = useState<string>("draft")
+    const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
     const supabase = createTenantClient()
 
-    // Load initial data
-    useState(() => {
-        const fetchBudgets = async () => {
-            const { data } = await supabase
-                .from("budgets")
-                .select("*")
-                .eq("patient_id", patientId)
-                .order("created_at", { ascending: false })
+    const fetchBudgets = async () => {
+        setIsLoading(true)
+        const { data, error } = await supabase
+            .from("budgets")
+            .select("*")
+            .eq("patient_id", patient.id)
+            .order("created_at", { ascending: false })
 
-            if (data) setBudgets(data)
-            setIsLoading(false)
+        if (!error && data) {
+            setBudgets(data)
         }
+        setIsLoading(false)
+    }
+
+    useEffect(() => {
         fetchBudgets()
-    })
+    }, [patient.id])
 
-    const handleSubmit = async () => {
-        setIsSaving(true)
+    const handleSuccess = () => {
+        fetchBudgets()
+    }
+
+    const handleDownload = async (budget: Budget) => {
+        setDownloadingId(budget.id)
         try {
-            const { data, error } = await supabase
-                .from("budgets")
-                .insert({
-                    patient_id: patientId,
-                    total_value: parseFloat(value) || 0,
-                    status,
-                    items: [] // Future: Add items builder
-                })
-                .select()
-                .single()
+            // Preparar dados para o PDF
+            // Mock de dados profissionais por enquanto (no futuro pegar do usuário logado)
+            const pdfData = {
+                number: budget.id.slice(0, 8).toUpperCase(),
+                date: budget.created_at,
+                patient: {
+                    name: patient.full_name,
+                    email: patient.contact_email,
+                    phone: patient.contact_phone,
+                    cpf: patient.document_id,
+                },
+                items: budget.items,
+                conditions: budget.conditions || "",
+                professional: {
+                    name: "Dr. Carlos Silva", // TODO: Pegar do profile do usuário
+                    registry: "CRO: 12345-SP"
+                }
+            }
 
-            if (error) throw error
-
-            setBudgets([data, ...budgets])
-            setIsOpen(false)
-            setValue("")
+            await downloadBudgetPDF(pdfData)
         } catch (error) {
-            console.error("Error saving budget:", error)
-            alert("Erro ao criar orçamento.")
+            console.error("Erro ao gerar PDF:", error)
+            alert("Erro ao gerar PDF do orçamento.")
         } finally {
-            setIsSaving(false)
+            setDownloadingId(null)
         }
     }
 
-    const getStatusParams = (status: string) => {
+    const getStatusBadge = (status: string) => {
         switch (status) {
-            case 'approved': return { label: 'Aprovado', color: 'text-green-600 bg-green-100', icon: FileCheck }
-            case 'rejected': return { label: 'Rejeitado', color: 'text-red-600 bg-red-100', icon: XCircle }
-            case 'presented': return { label: 'Apresentado', color: 'text-blue-600 bg-blue-100', icon: Clock }
-            default: return { label: 'Rascunho', color: 'text-gray-600 bg-gray-100', icon: FileText } // FileText import needed if used
+            case 'approved': return <Badge className="bg-green-500">Aprovado</Badge>
+            case 'rejected': return <Badge variant="destructive">Rejeitado</Badge>
+            case 'presented': return <Badge className="bg-blue-500">Apresentado</Badge>
+            default: return <Badge variant="secondary">Rascunho</Badge>
         }
     }
 
-    // Helper for FileText since it wasn't in the initial imports for the switch default
-    const StatusIcon = ({ status }: { status: string }) => {
-        const { icon: Icon, color } = getStatusParams(status)
-        return <div className={`p-2 rounded-full ${color}`}><Icon className="h-4 w-4" /></div>
+    const formatCurrency = (val: number) => {
+        return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(val)
     }
 
     return (
         <div className="space-y-4">
             <div className="flex justify-between items-center">
                 <h3 className="text-lg font-medium">Orçamentos</h3>
-                <Dialog open={isOpen} onOpenChange={setIsOpen}>
-                    <DialogTrigger asChild>
-                        <Button>
-                            <Plus className="mr-2 h-4 w-4" />
-                            Novo Orçamento
-                        </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                        <DialogHeader>
-                            <DialogTitle>Novo Orçamento</DialogTitle>
-                        </DialogHeader>
-                        <div className="grid gap-4 py-4">
-                            <div className="grid gap-2">
-                                <Label>Valor Total (R$)</Label>
-                                <Input
-                                    type="number"
-                                    placeholder="0.00"
-                                    value={value}
-                                    onChange={(e) => setValue(e.target.value)}
-                                />
-                            </div>
-                            <div className="grid gap-2">
-                                <Label>Status Inicial</Label>
-                                <Select value={status} onValueChange={setStatus}>
-                                    <SelectTrigger>
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="draft">Rascunho</SelectItem>
-                                        <SelectItem value="presented">Apresentado</SelectItem>
-                                        <SelectItem value="approved">Aprovado</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <Button onClick={handleSubmit} disabled={isSaving}>
-                                {isSaving ? "Criando..." : "Criar Orçamento"}
-                            </Button>
-                        </div>
-                    </DialogContent>
-                </Dialog>
+                <Button
+                    onClick={() => router.push(`/patients/${patient.id}/budgets/new`)}
+                    className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700"
+                >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Novo Orçamento
+                </Button>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {budgets.length === 0 && !isLoading ? (
-                    <div className="col-span-full text-center py-10 text-muted-foreground border rounded-lg border-dashed">
-                        Nenhum orçamento cadastrado para este paciente.
+            {isLoading ? (
+                <div className="text-center py-10">Carregando...</div>
+            ) : budgets.length === 0 ? (
+                <div className="text-center py-16 text-muted-foreground border rounded-2xl border-dashed bg-emerald-50/20">
+                    <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-600 mb-4">
+                        <FileText className="h-8 w-8" />
                     </div>
-                ) : (
-                    budgets.map((budget) => (
-                        <Card key={budget.id} className="cursor-pointer hover:bg-zinc-50 transition-colors">
-                            <CardHeader className="flex flex-row items-center justify-between pb-2">
-                                <CardTitle className="text-sm font-medium text-muted-foreground">
-                                    {format(new Date(budget.created_at), "dd/MM/yyyy", { locale: ptBR })}
-                                </CardTitle>
-                                <StatusIcon status={budget.status} />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold">
-                                    {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(budget.total_value)}
+                    <p className="text-lg font-medium text-slate-600">Nenhum orçamento criado</p>
+                    <p className="text-sm text-slate-500 mt-1">Clique no botão acima para criar o primeiro</p>
+                </div>
+            ) : (
+                <div className="grid gap-4">
+                    {budgets.map((budget) => (
+                        <Card key={budget.id} className="hover:shadow-md transition-shadow">
+                            <CardHeader className="flex flex-row items-center justify-between py-4">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 rounded-xl bg-emerald-100 text-emerald-600">
+                                        <FileText className="h-5 w-5" />
+                                    </div>
+                                    <div>
+                                        <CardTitle className="text-base flex items-center gap-2">
+                                            Orçamento #{budget.id.slice(0, 8).toUpperCase()}
+                                            {getStatusBadge(budget.status)}
+                                        </CardTitle>
+                                        <div className="text-xs text-muted-foreground flex items-center gap-2 mt-1">
+                                            <Calendar className="h-3 w-3" />
+                                            {format(new Date(budget.created_at), "dd 'de' MMMM, yyyy", { locale: ptBR })}
+                                        </div>
+                                    </div>
                                 </div>
-                                <p className="text-xs text-muted-foreground mt-1 capitalize">
-                                    {getStatusParams(budget.status).label}
-                                </p>
+                                <div className="flex items-center gap-4">
+                                    <div className="text-right mr-4">
+                                        <p className="text-xs text-muted-foreground">Valor Total</p>
+                                        <p className="font-bold text-lg text-emerald-700">{formatCurrency(budget.total_value)}</p>
+                                    </div>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleDownload(budget)}
+                                        disabled={downloadingId === budget.id}
+                                    >
+                                        {downloadingId === budget.id ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <>
+                                                <Download className="h-4 w-4 mr-2" />
+                                                PDF
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="py-2 border-t bg-muted/20 text-xs text-muted-foreground">
+                                {budget.items?.length || 0} procedimentos • Válido até {budget.valid_until ? new Date(budget.valid_until).toLocaleDateString("pt-BR") : "-"}
                             </CardContent>
                         </Card>
-                    ))
-                )}
-            </div>
+                    ))}
+                </div>
+            )}
+
+
         </div>
     )
 }
-
-// Missing import fix for helper
-import { FileText } from "lucide-react"
